@@ -1,17 +1,23 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, settingsTable } from "@workspace/db";
+import { db, settingsTable, isDatabaseConnected } from "@workspace/db";
 import {
   UpdateSettingsBody,
   GetSettingsResponse,
 } from "@workspace/api-zod";
 import { requireAuth } from "../lib/auth";
+import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
 const SETTINGS_ID = 1;
 
 async function ensureSettings() {
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    return memoryStore.settings;
+  }
+
   const [row] = await db
     .select()
     .from(settingsTable)
@@ -20,7 +26,7 @@ async function ensureSettings() {
 
   const [created] = await db
     .insert(settingsTable)
-    .values({ id: SETTINGS_ID, businessName: "Duka POS", logoUrl: null })
+    .values({ id: SETTINGS_ID, businessName: "SmartBuy", logoUrl: null })
     .onConflictDoNothing()
     .returning();
   if (created) return created;
@@ -49,6 +55,24 @@ router.patch(
     const parsed = UpdateSettingsBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
+      return;
+    }
+
+    if (!isDatabaseConnected) {
+      memoryStore.ensureSeeded();
+      if (parsed.data.businessName !== undefined) {
+        memoryStore.settings.businessName = parsed.data.businessName.trim();
+      }
+      if (parsed.data.logoUrl !== undefined) {
+        memoryStore.settings.logoUrl = parsed.data.logoUrl;
+      }
+      memoryStore.settings.updatedAt = new Date();
+      res.json(
+        GetSettingsResponse.parse({
+          businessName: memoryStore.settings.businessName,
+          logoUrl: memoryStore.settings.logoUrl,
+        }),
+      );
       return;
     }
 

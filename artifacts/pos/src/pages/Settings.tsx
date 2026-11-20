@@ -4,6 +4,7 @@ import {
   useUpdateSettings,
   useUpdateCredentials,
   getGetSettingsQueryKey,
+  customFetch,
 } from "@workspace/api-client-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUpload } from "@workspace/object-storage-web";
@@ -44,28 +45,18 @@ interface StaffUser {
 function useStaffUsers() {
   return useQuery<StaffUser[]>({
     queryKey: ["/api/users"],
-    queryFn: async () => {
-      const res = await fetch("/api/users", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to load users");
-      return res.json() as Promise<StaffUser[]>;
-    },
+    queryFn: () => customFetch<StaffUser[]>("/api/users"),
   });
 }
 
 function useCreateUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { username: string; password: string }) => {
-      const res = await fetch("/api/users", {
+    mutationFn: (data: { username: string; password: string }) =>
+      customFetch<StaffUser>("/api/users", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(data),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error((json as { error?: string }).error ?? "Failed to create user");
-      return json as StaffUser;
-    },
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/users"] }),
   });
 }
@@ -73,33 +64,21 @@ function useCreateUser() {
 function useDeleteUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: number) => {
-      const res = await fetch(`/api/users/${id}`, {
+    mutationFn: (id: number) =>
+      customFetch<void>(`/api/users/${id}`, {
         method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error((json as { error?: string }).error ?? "Failed to delete user");
-      }
-    },
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/users"] }),
   });
 }
 
 function useResetPassword() {
   return useMutation({
-    mutationFn: async (data: { id: number; newPassword: string }) => {
-      const res = await fetch(`/api/users/${data.id}/password`, {
+    mutationFn: (data: { id: number; newPassword: string }) =>
+      customFetch<{ ok: boolean }>(`/api/users/${data.id}/password`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ newPassword: data.newPassword }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error((json as { error?: string }).error ?? "Failed to reset password");
-      return json;
-    },
+      }),
   });
 }
 

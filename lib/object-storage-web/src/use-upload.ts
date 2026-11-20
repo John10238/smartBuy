@@ -61,11 +61,22 @@ export function useUpload(options: UseUploadOptions = {}) {
 
   const requestUploadUrl = useCallback(
     async (file: File): Promise<UploadResponse> => {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      try {
+        const token =
+          typeof sessionStorage !== "undefined"
+            ? sessionStorage.getItem("smartbuy.authToken")
+            : null;
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      } catch {
+        // ignore storage errors
+      }
       const response = await fetch(`${basePath}/uploads/request-url`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        credentials: "include",
+        headers,
         body: JSON.stringify({
           name: file.name,
           size: file.size,
@@ -80,7 +91,7 @@ export function useUpload(options: UseUploadOptions = {}) {
 
       return response.json();
     },
-    []
+    [basePath]
   );
 
   const uploadToPresignedUrl = useCallback(
@@ -136,11 +147,22 @@ export function useUpload(options: UseUploadOptions = {}) {
       url: string;
       headers?: Record<string, string>;
     }> => {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      try {
+        const token =
+          typeof sessionStorage !== "undefined"
+            ? sessionStorage.getItem("smartbuy.authToken")
+            : null;
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      } catch {
+        // ignore storage errors
+      }
       const response = await fetch(`${basePath}/uploads/request-url`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        credentials: "include",
+        headers,
         body: JSON.stringify({
           name: file.name,
           size: file.size,

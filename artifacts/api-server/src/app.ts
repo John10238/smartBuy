@@ -36,6 +36,7 @@ app.use(
   cors({
     origin: true,
     credentials: true,
+    exposedHeaders: ["X-Auth-Token"],
   }),
 );
 
@@ -49,20 +50,22 @@ void ensureDefaultUser().catch((err) => {
   logger.error({ err }, "Failed to seed default user");
 });
 
-if (process.env["NODE_ENV"] === "production") {
-  const frontendDist = path.resolve(process.cwd(), "artifacts/pos/dist/public");
-  if (fs.existsSync(frontendDist)) {
-    app.use(express.static(frontendDist));
-    app.get(/.*/, (_req, res) => {
-      res.sendFile(path.join(frontendDist, "index.html"));
-    });
-    logger.info({ frontendDist }, "Serving frontend static files");
-  } else {
-    logger.warn(
-      { frontendDist },
-      "Frontend dist not found — only /api routes will be served",
-    );
-  }
+const candidateDists = [
+  path.resolve(process.cwd(), "artifacts/pos/dist/public"),
+  path.resolve(process.cwd(), "../pos/dist/public"),
+];
+const frontendDist = candidateDists.find((p) => fs.existsSync(p));
+if (frontendDist) {
+  app.use(express.static(frontendDist));
+  app.get(/.*/, (_req, res) => {
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+  logger.info({ frontendDist }, "Serving frontend static files");
+} else {
+  logger.warn(
+    { candidateDists },
+    "Frontend dist not found — only /api routes will be served",
+  );
 }
 
 export default app;

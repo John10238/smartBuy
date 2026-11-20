@@ -1,9 +1,15 @@
-import { db, usersTable, settingsTable } from "@workspace/db";
+import { db, usersTable, settingsTable, isDatabaseConnected } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { logger } from "./logger";
+import { memoryStore } from "./memoryStore";
 
 export async function ensureDefaultUser(): Promise<void> {
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    return;
+  }
+
   const existing = await db.select().from(usersTable).limit(1);
   if (existing.length === 0) {
     const passwordHash = await hashPassword("admin");

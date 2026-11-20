@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
 import { eq, sql, and, gte, lt } from "drizzle-orm";
-import { db, ordersTable, orderItemsTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, isDatabaseConnected } from "@workspace/db";
 import { z } from "zod";
+import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
@@ -25,6 +26,67 @@ router.get("/reports/daily", async (req, res): Promise<void> => {
 
   const dayStart = new Date(`${dateStr}T00:00:00+03:00`);
   const dayEnd = new Date(`${dateStr}T23:59:59.999+03:00`);
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const orders = memoryStore.orders
+      .filter(
+        (o) =>
+          o.status === "paid" &&
+          o.createdAt >= dayStart &&
+          o.createdAt < dayEnd,
+      )
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    let totalCents = 0;
+    let cashCents = 0;
+    let mpesaCents = 0;
+    let cashCount = 0;
+    let mpesaCount = 0;
+
+    const serialized = orders.map((o) => {
+      totalCents += o.totalCents;
+      if (o.paymentMethod === "cash") {
+        cashCents += o.totalCents;
+        cashCount++;
+      } else {
+        mpesaCents += o.totalCents;
+        mpesaCount++;
+      }
+      return {
+        id: o.id,
+        reference: o.reference,
+        paymentMethod: o.paymentMethod,
+        cashierName: o.cashierName,
+        customerName: o.customerName,
+        customerPhone: o.customerPhone,
+        totalCents: o.totalCents,
+        createdAt: o.createdAt.toISOString(),
+        items: memoryStore.orderItems
+          .filter((it) => it.orderId === o.id)
+          .map((it) => ({
+            productName: it.productName,
+            quantity: it.quantity,
+            unitPriceCents: it.unitPriceCents,
+            lineTotalCents: it.lineTotalCents,
+          })),
+      };
+    });
+
+    res.json({
+      date: dateStr,
+      summary: {
+        totalCents,
+        cashCents,
+        mpesaCents,
+        cashCount,
+        mpesaCount,
+        orderCount: orders.length,
+      },
+      orders: serialized,
+    });
+    return;
+  }
 
   const orders = await db
     .select()

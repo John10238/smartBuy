@@ -1,5 +1,6 @@
-import { pool } from "@workspace/db";
+import { pool, isDatabaseConnected } from "@workspace/db";
 import { logger } from "./lib/logger";
+import { memoryStore } from "./lib/memoryStore";
 import bcrypt from "bcryptjs";
 
 const DDL = `
@@ -78,6 +79,12 @@ CREATE INDEX IF NOT EXISTS "IDX_user_sessions_expire" ON "user_sessions" ("expir
 `;
 
 export async function runMigrations(): Promise<void> {
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    logger.info("DATABASE_URL not set — initialized in-memory store");
+    return;
+  }
+
   logger.info("Running database migrations…");
   const client = await pool.connect();
   try {

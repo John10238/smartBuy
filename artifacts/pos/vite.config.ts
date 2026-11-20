@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { VitePWA } from "vite-plugin-pwa";
 
-const port = Number(process.env.PORT ?? "5173");
+const port = Number(process.env.PORT ?? "3000");
 const basePath = process.env.BASE_PATH ?? "/";
 
 export default defineConfig({

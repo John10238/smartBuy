@@ -6,6 +6,7 @@ import {
   orderItemsTable,
   productsTable,
   transactionsTable,
+  isDatabaseConnected,
 } from "@workspace/db";
 import { MpesaStkPushBody, MpesaStkPushResponse } from "@workspace/api-zod";
 import {
@@ -15,6 +16,7 @@ import {
   getEffectiveCallbackUrl,
 } from "../lib/mpesa";
 import { requireAuth } from "../lib/auth";
+import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
@@ -39,10 +41,15 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
-  const [order] = await db
-    .select()
-    .from(ordersTable)
-    .where(eq(ordersTable.id, parsed.data.orderId));
+  const order = !isDatabaseConnected
+    ? (memoryStore.ensureSeeded(),
+      memoryStore.orders.find((o) => o.id === parsed.data.orderId))
+    : (
+        await db
+          .select()
+          .from(ordersTable)
+          .where(eq(ordersTable.id, parsed.data.orderId))
+      )[0];
 
   if (!order) {
     res.status(400).json({ error: "Order not found" });
@@ -72,56 +79,95 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
 
   if (!stk.CheckoutRequestID) {
     req.log.warn({ stk }, "STK push returned no CheckoutRequestID");
-    const [tx] = await db
-      .insert(transactionsTable)
-      .values({
+    let txId: number | undefined;
+    if (!isDatabaseConnected) {
+      const memTx = {
+        id: memoryStore.allocTransactionId(),
         orderId: order.id,
         amountCents: order.totalCents,
         provider: "mpesa",
         status: "failed",
+        mpesaCheckoutRequestId: null,
+        mpesaMerchantRequestId: null,
+        mpesaReceiptNumber: null,
         phoneNumber: phone,
         rawCallback: JSON.stringify(stk),
-      })
-      .returning();
+        createdAt: new Date(),
+      };
+      memoryStore.transactions.push(memTx);
+      txId = memTx.id;
+    } else {
+      const [tx] = await db
+        .insert(transactionsTable)
+        .values({
+          orderId: order.id,
+          amountCents: order.totalCents,
+          provider: "mpesa",
+          status: "failed",
+          phoneNumber: phone,
+          rawCallback: JSON.stringify(stk),
+        })
+        .returning();
+      txId = tx?.id;
+    }
 
     const rawError = stk.errorMessage ?? stk.ResponseDescription ?? "M-Pesa request rejected";
     const callbackUrl = getEffectiveCallbackUrl();
     const isCallbackUrlError =
       rawError.toLowerCase().includes("callback") ||
       rawError.toLowerCase().includes("callbackurl");
-    const isDevUrl =
-      callbackUrl.includes(".replit.dev") || callbackUrl.includes("localhost");
+    const isDevUrl = callbackUrl.includes("localhost");
 
     let friendlyError = rawError;
     if (isCallbackUrlError && isDevUrl) {
-      friendlyError = `Invalid callback URL: the app is using a dev-only URL (${callbackUrl}) that Safaricom cannot reach. Open the deployed (published) app and try again, or set MPESA_CALLBACK_URL to your production domain.`;
+      friendlyError = `Invalid callback URL: the app is using a dev-only URL (${callbackUrl}) that Safaricom cannot reach. Set MPESA_CALLBACK_URL to your production domain.`;
     } else if (isCallbackUrlError) {
       friendlyError = `Safaricom rejected the callback URL (${callbackUrl}). Make sure this URL is publicly accessible via HTTPS and not blocked by a firewall or proxy.`;
     }
 
     res.status(502).json({
       error: friendlyError,
-      transactionId: tx?.id,
+      transactionId: txId,
     });
     return;
   }
 
-  const [tx] = await db
-    .insert(transactionsTable)
-    .values({
+  let txId: number;
+  if (!isDatabaseConnected) {
+    const memTx = {
+      id: memoryStore.allocTransactionId(),
       orderId: order.id,
       amountCents: order.totalCents,
       provider: "mpesa",
       status: "pending",
       mpesaCheckoutRequestId: stk.CheckoutRequestID ?? null,
       mpesaMerchantRequestId: stk.MerchantRequestID ?? null,
+      mpesaReceiptNumber: null,
       phoneNumber: phone,
-    })
-    .returning();
+      rawCallback: null,
+      createdAt: new Date(),
+    };
+    memoryStore.transactions.push(memTx);
+    txId = memTx.id;
+  } else {
+    const [tx] = await db
+      .insert(transactionsTable)
+      .values({
+        orderId: order.id,
+        amountCents: order.totalCents,
+        provider: "mpesa",
+        status: "pending",
+        mpesaCheckoutRequestId: stk.CheckoutRequestID ?? null,
+        mpesaMerchantRequestId: stk.MerchantRequestID ?? null,
+        phoneNumber: phone,
+      })
+      .returning();
 
-  if (!tx) {
-    res.status(500).json({ error: "Failed to record transaction" });
-    return;
+    if (!tx) {
+      res.status(500).json({ error: "Failed to record transaction" });
+      return;
+    }
+    txId = tx.id;
   }
 
   res.status(200).json(
@@ -131,7 +177,7 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
       responseCode: stk.ResponseCode ?? null,
       responseDescription: stk.ResponseDescription ?? null,
       customerMessage: stk.CustomerMessage ?? null,
-      transactionId: tx.id,
+      transactionId: txId,
     }),
   );
 });
@@ -173,6 +219,50 @@ router.post("/mpesa/callback", async (req, res): Promise<void> => {
   req.log.info({ body: JSON.stringify(payload), checkoutRequestId: cb?.CheckoutRequestID, resultCode: cb?.ResultCode }, "Received M-Pesa callback from Safaricom");
 
   if (!cb || !cb.CheckoutRequestID) {
+    res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+    return;
+  }
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const tx = memoryStore.transactions.find(
+      (t) => t.mpesaCheckoutRequestId === cb.CheckoutRequestID,
+    );
+    if (!tx) {
+      res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
+      return;
+    }
+    const success = cb.ResultCode === 0;
+    const items = cb.CallbackMetadata?.Item ?? [];
+    const findItem = (name: string) => items.find((i) => i.Name === name)?.Value;
+    const receipt = findItem("MpesaReceiptNumber");
+    const phone = findItem("PhoneNumber");
+
+    tx.status = success ? "success" : "failed";
+    if (receipt) tx.mpesaReceiptNumber = String(receipt);
+    if (phone) tx.phoneNumber = String(phone);
+    tx.rawCallback = JSON.stringify(payload);
+
+    if (tx.orderId) {
+      const order = memoryStore.orders.find((o) => o.id === tx.orderId);
+      if (order) {
+        if (success && order.status !== "paid") {
+          order.status = "paid";
+          order.updatedAt = new Date();
+          const orderItems = memoryStore.orderItems.filter(
+            (it) => it.orderId === order.id,
+          );
+          for (const item of orderItems) {
+            const p = memoryStore.products.find((pr) => pr.id === item.productId);
+            if (p) p.stock = Math.max(0, p.stock - item.quantity);
+          }
+        } else if (!success) {
+          order.status = "failed";
+          order.updatedAt = new Date();
+        }
+      }
+    }
+
     res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
     return;
   }

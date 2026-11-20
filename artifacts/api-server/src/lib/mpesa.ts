@@ -17,13 +17,6 @@ function deriveCallbackUrl(): string {
   if (explicit && !isPlaceholder(explicit)) {
     return explicit.trim();
   }
-  const domains = (process.env["REPLIT_DOMAINS"] ?? "")
-    .split(",")
-    .map((d) => d.trim())
-    .filter(Boolean);
-  if (domains.length > 0) {
-    return `https://${domains[0]}/api/mpesa/callback`;
-  }
   return "";
 }
 
@@ -33,7 +26,8 @@ export function getMpesaConfig(): MpesaConfig | null {
   const consumerSecret = process.env["MPESA_CONSUMER_SECRET"] ?? "";
   const shortcode = process.env["MPESA_SHORTCODE"] ?? "";
   const passkey = process.env["MPESA_PASSKEY"] ?? "";
-  const callbackUrl =  "https://smartbuy-wu7b.onrender.com/api/mpesa/callback";
+  const callbackUrl =
+    deriveCallbackUrl() || "https://smartbuy-wu7b.onrender.com/api/mpesa/callback";
 
   if (
     isPlaceholder(consumerKey) ||
@@ -45,10 +39,10 @@ export function getMpesaConfig(): MpesaConfig | null {
     return null;
   }
 
-  if (callbackUrl.includes(".replit.dev") || callbackUrl.includes("localhost")) {
+  if (callbackUrl.includes("localhost")) {
     logger.warn(
       { callbackUrl },
-      "M-Pesa callback URL looks like a dev/local URL. Safaricom cannot reach it. Deploy the app or set MPESA_CALLBACK_URL to your production domain.",
+      "M-Pesa callback URL looks like a local URL. Safaricom cannot reach it. Set MPESA_CALLBACK_URL to your public HTTPS domain.",
     );
   }
 

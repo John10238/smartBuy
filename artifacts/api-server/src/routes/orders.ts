@@ -5,6 +5,7 @@ import {
   ordersTable,
   orderItemsTable,
   productsTable,
+  isDatabaseConnected,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -16,11 +17,16 @@ import {
   DeleteOrderParams,
 } from "@workspace/api-zod";
 import { generateOrderReference } from "../lib/mpesa";
+import {
+  memoryStore,
+  type MemoryOrder,
+  type MemoryOrderItem,
+} from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
-type OrderRow = typeof ordersTable.$inferSelect;
-type OrderItemRow = typeof orderItemsTable.$inferSelect;
+type OrderRow = typeof ordersTable.$inferSelect | MemoryOrder;
+type OrderItemRow = typeof orderItemsTable.$inferSelect | MemoryOrderItem;
 
 function serializeOrder(order: OrderRow, items: OrderItemRow[]) {
   return {
@@ -50,6 +56,27 @@ router.get("/orders", async (req, res): Promise<void> => {
   const parsed = ListOrdersQueryParams.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const filtered = (
+      parsed.data.status
+        ? memoryStore.orders.filter((o) => o.status === parsed.data.status)
+        : [...memoryStore.orders]
+    ).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    res.json(
+      ListOrdersResponse.parse(
+        filtered.map((o) =>
+          serializeOrder(
+            o,
+            memoryStore.orderItems.filter((it) => it.orderId === o.id),
+          ),
+        ),
+      ),
+    );
     return;
   }
 
@@ -93,6 +120,69 @@ router.post("/orders", async (req, res): Promise<void> => {
   const parsed = CreateOrderBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const productMap = new Map(memoryStore.products.map((p) => [p.id, p]));
+    for (const item of parsed.data.items) {
+      const p = productMap.get(item.productId);
+      if (!p) {
+        res.status(400).json({ error: `Product ${item.productId} not found` });
+        return;
+      }
+      if (p.stock < item.quantity) {
+        res
+          .status(400)
+          .json({ error: `Insufficient stock for ${p.name} (have ${p.stock})` });
+        return;
+      }
+    }
+
+    const totalCents = parsed.data.items.reduce((sum, item) => {
+      const p = productMap.get(item.productId)!;
+      return sum + p.priceCents * item.quantity;
+    }, 0);
+
+    const reference = generateOrderReference();
+    const isCash = parsed.data.paymentMethod === "cash";
+    const now = new Date();
+    const order: MemoryOrder = {
+      id: memoryStore.allocOrderId(),
+      reference,
+      status: isCash ? "paid" : "pending",
+      totalCents,
+      customerPhone: parsed.data.customerPhone ?? null,
+      customerName: parsed.data.customerName ?? null,
+      cashierName: parsed.data.cashierName?.trim() || null,
+      paymentMethod: parsed.data.paymentMethod,
+      createdAt: now,
+      updatedAt: now,
+    };
+    memoryStore.orders.push(order);
+
+    const insertedItems: MemoryOrderItem[] = parsed.data.items.map((item) => {
+      const p = productMap.get(item.productId)!;
+      const oi: MemoryOrderItem = {
+        id: memoryStore.allocOrderItemId(),
+        orderId: order.id,
+        productId: p.id,
+        productName: p.name,
+        quantity: item.quantity,
+        unitPriceCents: p.priceCents,
+        lineTotalCents: p.priceCents * item.quantity,
+      };
+      memoryStore.orderItems.push(oi);
+      if (isCash) {
+        p.stock = Math.max(0, p.stock - item.quantity);
+      }
+      return oi;
+    });
+
+    res
+      .status(201)
+      .json(GetOrderResponse.parse(serializeOrder(order, insertedItems)));
     return;
   }
 
@@ -193,6 +283,26 @@ router.post("/orders/:id/cancel", async (req, res): Promise<void> => {
     return;
   }
 
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const order = memoryStore.orders.find((o) => o.id === params.data.id);
+    if (!order) {
+      res.status(404).json({ error: "Order not found" });
+      return;
+    }
+    const items = memoryStore.orderItems.filter((it) => it.orderId === order.id);
+    if (order.status === "paid") {
+      for (const item of items) {
+        const p = memoryStore.products.find((pr) => pr.id === item.productId);
+        if (p) p.stock += item.quantity;
+      }
+    }
+    order.status = "cancelled";
+    order.updatedAt = new Date();
+    res.json(GetOrderResponse.parse(serializeOrder(order, items)));
+    return;
+  }
+
   try {
     const result = await db.transaction(async (tx) => {
       const [order] = await tx
@@ -257,6 +367,29 @@ router.delete("/orders/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const idx = memoryStore.orders.findIndex((o) => o.id === params.data.id);
+    if (idx === -1) {
+      res.status(404).json({ error: "Order not found" });
+      return;
+    }
+    const order = memoryStore.orders[idx]!;
+    if (order.status === "paid") {
+      const items = memoryStore.orderItems.filter((it) => it.orderId === order.id);
+      for (const item of items) {
+        const p = memoryStore.products.find((pr) => pr.id === item.productId);
+        if (p) p.stock += item.quantity;
+      }
+    }
+    memoryStore.orders.splice(idx, 1);
+    memoryStore.orderItems = memoryStore.orderItems.filter(
+      (it) => it.orderId !== order.id,
+    );
+    res.sendStatus(204);
+    return;
+  }
+
   try {
     const result = await db.transaction(async (tx) => {
       const [order] = await tx
@@ -301,6 +434,18 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
   const params = GetOrderParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const order = memoryStore.orders.find((o) => o.id === params.data.id);
+    if (!order) {
+      res.status(404).json({ error: "Order not found" });
+      return;
+    }
+    const items = memoryStore.orderItems.filter((it) => it.orderId === order.id);
+    res.json(GetOrderResponse.parse(serializeOrder(order, items)));
     return;
   }
 

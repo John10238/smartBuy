@@ -6,7 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { useGetSettings, getGetSettingsQueryKey } from "@workspace/api-client-react";
+import {
+  useGetSettings,
+  getGetSettingsQueryKey,
+  customFetch,
+} from "@workspace/api-client-react";
 import { formatKES } from "@/lib/utils";
 
 interface ReportItem {
@@ -48,13 +52,7 @@ function todayDate() {
 function useDailyReport(date: string) {
   return useQuery<DailyReport>({
     queryKey: ["/api/reports/daily", date],
-    queryFn: async () => {
-      const res = await fetch(`/api/reports/daily?date=${date}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to load report");
-      return res.json() as Promise<DailyReport>;
-    },
+    queryFn: () => customFetch<DailyReport>(`/api/reports/daily?date=${date}`),
   });
 }
 

@@ -2,22 +2,26 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "scripts"
+  ],
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm --filter @workspace/pos run build && pnpm --filter @workspace/api-server run build",
+    "dev": "npm run build --workspace=artifacts/pos && npm run dev --workspace=artifacts/api-server",
+    "build": "npm run build --workspace=artifacts/pos && npm run build --workspace=artifacts/api-server",
     "start": "node --enable-source-maps artifacts/api-server/dist/index.mjs",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "npm run typecheck:libs && npm run typecheck --workspaces --if-present",
+    "lint": "npm run typecheck"
   },
   "private": true,
   "devDependencies": {
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
   },
-  "pnpm": {
-    "overrides": {
-      "react": "catalog:",
-      "react-dom": "catalog:"
-    }
+  "overrides": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   }
 }

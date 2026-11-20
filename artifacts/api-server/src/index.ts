@@ -2,7 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { runMigrations } from "./migrate";
 
-const port = Number(process.env["PORT"] ?? "8080");
+const port = Number(process.env["PORT"] ?? "3000");
 
 if (Number.isNaN(port) || port <= 0) {
   logger.error({ port: process.env["PORT"] }, "Invalid PORT value");
@@ -16,7 +16,7 @@ async function main() {
     logger.error({ err }, "Database migration failed — continuing anyway");
   }
 
-  app.listen(port, () => {
+  app.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "Server listening");
   });
 }

@@ -73,14 +73,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading: query.isLoading,
     isAuthenticated: !!query.data && !isAuthError,
     refresh: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: getGetCurrentUserQueryKey(),
+      const userKey = getGetCurrentUserQueryKey();
+      queryClient.removeQueries({
+        predicate: (q) => q.queryKey[0] !== userKey[0],
       });
+      await queryClient.refetchQueries({
+        queryKey: userKey,
+      });
+      await queryClient.invalidateQueries();
     },
     clear: () => {
       writeStoredToken(null);
-      queryClient.setQueryData(getGetCurrentUserQueryKey(), null);
-      queryClient.removeQueries({ queryKey: getGetCurrentUserQueryKey() });
+      const userKey = getGetCurrentUserQueryKey();
+      void queryClient.cancelQueries();
+      queryClient.setQueryData(userKey, null);
+      queryClient.removeQueries({
+        predicate: (q) => q.queryKey[0] !== userKey[0],
+      });
     },
   };
 

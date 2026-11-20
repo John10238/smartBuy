@@ -5,28 +5,25 @@ import {
   UpdateSettingsBody,
   GetSettingsResponse,
 } from "@workspace/api-zod";
-import { requireAuth } from "../lib/auth";
+import { requireAuth, getTenantId, resolveTenantId } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
-const SETTINGS_ID = 1;
-
-async function ensureSettings() {
+async function ensureSettingsForTenant(tenantId: number) {
   if (!isDatabaseConnected) {
-    memoryStore.ensureSeeded();
-    return memoryStore.settings;
+    return memoryStore.getOrCreateSettings(tenantId);
   }
 
   const [row] = await db
     .select()
     .from(settingsTable)
-    .where(eq(settingsTable.id, SETTINGS_ID));
+    .where(eq(settingsTable.id, tenantId));
   if (row) return row;
 
   const [created] = await db
     .insert(settingsTable)
-    .values({ id: SETTINGS_ID, businessName: "SmartBuy", logoUrl: null })
+    .values({ id: tenantId, businessName: "SmartBuy", logoUrl: null })
     .onConflictDoNothing()
     .returning();
   if (created) return created;
@@ -34,12 +31,23 @@ async function ensureSettings() {
   const [again] = await db
     .select()
     .from(settingsTable)
-    .where(eq(settingsTable.id, SETTINGS_ID));
+    .where(eq(settingsTable.id, tenantId));
   return again!;
 }
 
-router.get("/settings", async (_req, res): Promise<void> => {
-  const row = await ensureSettings();
+router.get("/settings", async (req, res): Promise<void> => {
+  const tenantId = await resolveTenantId(req);
+  if (!tenantId) {
+    res.json(
+      GetSettingsResponse.parse({
+        businessName: "SmartBuy",
+        logoUrl: null,
+      }),
+    );
+    return;
+  }
+
+  const row = await ensureSettingsForTenant(tenantId);
   res.json(
     GetSettingsResponse.parse({
       businessName: row.businessName,
@@ -58,25 +66,27 @@ router.patch(
       return;
     }
 
+    const tenantId = getTenantId(req);
+
     if (!isDatabaseConnected) {
-      memoryStore.ensureSeeded();
+      const settings = memoryStore.getOrCreateSettings(tenantId);
       if (parsed.data.businessName !== undefined) {
-        memoryStore.settings.businessName = parsed.data.businessName.trim();
+        settings.businessName = parsed.data.businessName.trim();
       }
       if (parsed.data.logoUrl !== undefined) {
-        memoryStore.settings.logoUrl = parsed.data.logoUrl;
+        settings.logoUrl = parsed.data.logoUrl;
       }
-      memoryStore.settings.updatedAt = new Date();
+      settings.updatedAt = new Date();
       res.json(
         GetSettingsResponse.parse({
-          businessName: memoryStore.settings.businessName,
-          logoUrl: memoryStore.settings.logoUrl,
+          businessName: settings.businessName,
+          logoUrl: settings.logoUrl,
         }),
       );
       return;
     }
 
-    await ensureSettings();
+    await ensureSettingsForTenant(tenantId);
 
     const updates: Record<string, unknown> = {};
     if (parsed.data.businessName !== undefined) {
@@ -91,12 +101,12 @@ router.patch(
         ? await db
             .update(settingsTable)
             .set(updates)
-            .where(eq(settingsTable.id, SETTINGS_ID))
+            .where(eq(settingsTable.id, tenantId))
             .returning()
         : await db
             .select()
             .from(settingsTable)
-            .where(eq(settingsTable.id, SETTINGS_ID));
+            .where(eq(settingsTable.id, tenantId));
 
     res.json(
       GetSettingsResponse.parse({

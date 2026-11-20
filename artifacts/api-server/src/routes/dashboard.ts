@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { sql, desc, eq, inArray, lt } from "drizzle-orm";
+import { sql, desc, eq, and, inArray, lt } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -8,13 +8,18 @@ import {
   isDatabaseConnected,
 } from "@workspace/db";
 import { GetDashboardSummaryResponse } from "@workspace/api-zod";
+import { getTenantId } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
 router.get("/dashboard/summary", async (req, res): Promise<void> => {
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
+    const ownedOrders = memoryStore.orders.filter((o) => o.ownerId === tenantId);
+    const ownedProducts = memoryStore.products.filter((p) => p.ownerId === tenantId);
     const now = Date.now();
     const dayAgo = now - 24 * 60 * 60 * 1000;
     const fourteenDaysAgo = now - 14 * 24 * 60 * 60 * 1000;
@@ -27,7 +32,7 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     const paidOrderIds = new Set<number>();
     const salesByDayMap = new Map<string, { revenueCents: number; orderCount: number }>();
 
-    for (const o of memoryStore.orders) {
+    for (const o of ownedOrders) {
       if (o.status === "paid") {
         paidOrders++;
         paidOrderIds.add(o.id);
@@ -47,8 +52,8 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
       }
     }
 
-    const lowStockCount = memoryStore.products.filter((p) => p.stock < 5).length;
-    const recent = [...memoryStore.orders]
+    const lowStockCount = ownedProducts.filter((p) => p.stock < 5).length;
+    const recent = [...ownedOrders]
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, 5);
 
@@ -84,10 +89,10 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     const summary = {
       totalRevenueCents,
       todayRevenueCents,
-      totalOrders: memoryStore.orders.length,
+      totalOrders: ownedOrders.length,
       paidOrders,
       pendingOrders,
-      totalProducts: memoryStore.products.length,
+      totalProducts: ownedProducts.length,
       lowStockCount,
       recentOrders: recent.map((o) => ({
         id: o.id,
@@ -128,20 +133,23 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
       paid_orders: sql<number>`COUNT(*) FILTER (WHERE ${ordersTable.status} = 'paid')::int`,
       pending_orders: sql<number>`COUNT(*) FILTER (WHERE ${ordersTable.status} = 'pending')::int`,
     })
-    .from(ordersTable);
+    .from(ordersTable)
+    .where(eq(ordersTable.ownerId, tenantId));
 
   const [productCountRow] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
-    .from(productsTable);
+    .from(productsTable)
+    .where(eq(productsTable.ownerId, tenantId));
 
   const [lowStockRow] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(productsTable)
-    .where(lt(productsTable.stock, 5));
+    .where(and(eq(productsTable.ownerId, tenantId), lt(productsTable.stock, 5)));
 
   const recent = await db
     .select()
     .from(ordersTable)
+    .where(eq(ordersTable.ownerId, tenantId))
     .orderBy(desc(ordersTable.createdAt))
     .limit(5);
 
@@ -173,7 +181,7 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     })
     .from(orderItemsTable)
     .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-    .where(eq(ordersTable.status, "paid"))
+    .where(and(eq(ordersTable.ownerId, tenantId), eq(ordersTable.status, "paid")))
     .groupBy(orderItemsTable.productId, orderItemsTable.productName)
     .orderBy(sql`SUM(${orderItemsTable.quantity}) DESC`)
     .limit(5);
@@ -186,7 +194,10 @@ router.get("/dashboard/summary", async (req, res): Promise<void> => {
     })
     .from(ordersTable)
     .where(
-      sql`${ordersTable.status} = 'paid' AND ${ordersTable.createdAt} >= NOW() - INTERVAL '14 days'`,
+      and(
+        eq(ordersTable.ownerId, tenantId),
+        sql`${ordersTable.status} = 'paid' AND ${ordersTable.createdAt} >= NOW() - INTERVAL '14 days'`,
+      ),
     )
     .groupBy(sql`TO_CHAR(${ordersTable.createdAt}, 'YYYY-MM-DD')`)
     .orderBy(sql`TO_CHAR(${ordersTable.createdAt}, 'YYYY-MM-DD') ASC`);

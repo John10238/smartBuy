@@ -9,6 +9,7 @@ import { ordersTable } from "./orders";
 
 export const transactionsTable = pgTable("transactions", {
   id: serial("id").primaryKey(),
+  ownerId: integer("owner_id").notNull().default(1),
   orderId: integer("order_id").references(() => ordersTable.id, {
     onDelete: "set null",
   }),

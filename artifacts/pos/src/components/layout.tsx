@@ -12,19 +12,14 @@ import { cn } from "@/lib/utils";
 import {
   useGetSettings,
   useLogout,
-  getGetCurrentUserQueryKey,
   getGetSettingsQueryKey,
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
 import { BrandMark } from "@/components/BrandMark";
 import { useAuth } from "@/contexts/AuthContext";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
   const { user, clear } = useAuth();
   const settings = useGetSettings({
     query: {
@@ -50,18 +45,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   async function onLogout() {
     try {
       await logout.mutateAsync();
+    } catch {
+      // Clear local session state even if server session already expired
+    } finally {
       clear();
-      await queryClient.invalidateQueries({
-        queryKey: getGetCurrentUserQueryKey(),
-      });
       navigate("/");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Logout failed";
-      toast({
-        title: "Logout failed",
-        description: message,
-        variant: "destructive",
-      });
     }
   }
 
@@ -99,8 +87,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="p-4 border-t border-border space-y-2">
           {user ? (
-            <p className="text-xs text-muted-foreground px-2">
-              Signed in as <span className="font-medium">{user.username}</span>
+            <p className="text-xs text-muted-foreground px-2 truncate">
+              Signed in as{" "}
+              <span className="font-medium">
+                {user.email || user.username}
+              </span>
             </p>
           ) : null}
           <Button

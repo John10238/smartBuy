@@ -2,6 +2,7 @@ import { pgTable, serial, text, integer, timestamp } from "drizzle-orm/pg-core";
 
 export const productsTable = pgTable("products", {
   id: serial("id").primaryKey(),
+  ownerId: integer("owner_id").notNull().default(1),
   name: text("name").notNull(),
   sku: text("sku"),
   description: text("description"),

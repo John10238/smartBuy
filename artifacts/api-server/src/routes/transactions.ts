@@ -2,15 +2,23 @@ import { Router, type IRouter } from "express";
 import { desc, eq } from "drizzle-orm";
 import { db, transactionsTable, ordersTable, isDatabaseConnected } from "@workspace/db";
 import { ListTransactionsResponse } from "@workspace/api-zod";
+import { getTenantId } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
-router.get("/transactions", async (_req, res): Promise<void> => {
+router.get("/transactions", async (req, res): Promise<void> => {
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const orderMap = new Map(memoryStore.orders.map((o) => [o.id, o.reference]));
-    const serialized = [...memoryStore.transactions]
+    const orderMap = new Map(
+      memoryStore.orders
+        .filter((o) => o.ownerId === tenantId)
+        .map((o) => [o.id, o.reference]),
+    );
+    const serialized = memoryStore.transactions
+      .filter((tx) => tx.ownerId === tenantId)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .map((tx) => ({
         id: tx.id,
@@ -36,6 +44,7 @@ router.get("/transactions", async (_req, res): Promise<void> => {
     })
     .from(transactionsTable)
     .leftJoin(ordersTable, eq(transactionsTable.orderId, ordersTable.id))
+    .where(eq(transactionsTable.ownerId, tenantId))
     .orderBy(desc(transactionsTable.createdAt));
 
   const serialized = rows.map(({ tx, orderRef }) => ({

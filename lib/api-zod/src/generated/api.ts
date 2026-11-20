@@ -288,24 +288,31 @@ export const MpesaCallbackResponse = zod.object({
 export const GetCurrentUserResponse = zod.object({
   id: zod.number(),
   username: zod.string(),
+  email: zod.string().nullable().optional(),
 });
 
 /**
- * @summary Log in with username and password
+ * @summary Log in with email (or username) and password
  */
 
-export const LoginBody = zod.object({
-  username: zod.string().min(1),
-  password: zod.string().min(1),
-});
+export const LoginBody = zod
+  .object({
+    email: zod.string().trim().optional(),
+    username: zod.string().trim().optional(),
+    password: zod.string().min(1),
+  })
+  .refine((data) => Boolean(data.email || data.username), {
+    message: "Email is required",
+  });
 
 export const LoginResponse = zod.object({
   id: zod.number(),
   username: zod.string(),
+  email: zod.string().nullable().optional(),
 });
 
 /**
- * @summary Change username and/or password
+ * @summary Change email, username and/or password
  */
 
 export const updateCredentialsBodyNewUsernameMin = 3;
@@ -314,6 +321,7 @@ export const updateCredentialsBodyNewPasswordMin = 6;
 
 export const UpdateCredentialsBody = zod.object({
   currentPassword: zod.string().min(1),
+  newEmail: zod.string().trim().email("Enter a valid email address").optional(),
   newUsername: zod.string().min(updateCredentialsBodyNewUsernameMin).optional(),
   newPassword: zod.string().min(updateCredentialsBodyNewPasswordMin).optional(),
 });
@@ -321,6 +329,7 @@ export const UpdateCredentialsBody = zod.object({
 export const UpdateCredentialsResponse = zod.object({
   id: zod.number(),
   username: zod.string(),
+  email: zod.string().nullable().optional(),
 });
 
 /**

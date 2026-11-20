@@ -15,10 +15,14 @@ export async function ensureDefaultUser(): Promise<void> {
     const passwordHash = await hashPassword("admin");
     await db
       .insert(usersTable)
-      .values({ username: "admin", passwordHash })
+      .values({
+        username: "admin",
+        email: "admin@smartbuy.co.ke",
+        passwordHash,
+      })
       .onConflictDoNothing();
     logger.info(
-      "Seeded default user 'admin' with password 'admin'. Change it from Settings.",
+      "Seeded default user 'admin' (admin@smartbuy.co.ke) with password 'admin'. Change it from Settings.",
     );
   }
 

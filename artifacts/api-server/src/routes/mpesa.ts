@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -15,7 +15,7 @@ import {
   normalizeKenyanPhone,
   getEffectiveCallbackUrl,
 } from "../lib/mpesa";
-import { requireAuth } from "../lib/auth";
+import { requireAuth, getTenantId } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
@@ -41,14 +41,23 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   const order = !isDatabaseConnected
     ? (memoryStore.ensureSeeded(),
-      memoryStore.orders.find((o) => o.id === parsed.data.orderId))
+      memoryStore.orders.find(
+        (o) => o.id === parsed.data.orderId && o.ownerId === tenantId,
+      ))
     : (
         await db
           .select()
           .from(ordersTable)
-          .where(eq(ordersTable.id, parsed.data.orderId))
+          .where(
+            and(
+              eq(ordersTable.id, parsed.data.orderId),
+              eq(ordersTable.ownerId, tenantId),
+            ),
+          )
       )[0];
 
   if (!order) {
@@ -83,6 +92,7 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
     if (!isDatabaseConnected) {
       const memTx = {
         id: memoryStore.allocTransactionId(),
+        ownerId: tenantId,
         orderId: order.id,
         amountCents: order.totalCents,
         provider: "mpesa",
@@ -100,6 +110,7 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
       const [tx] = await db
         .insert(transactionsTable)
         .values({
+          ownerId: tenantId,
           orderId: order.id,
           amountCents: order.totalCents,
           provider: "mpesa",
@@ -136,6 +147,7 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
   if (!isDatabaseConnected) {
     const memTx = {
       id: memoryStore.allocTransactionId(),
+      ownerId: tenantId,
       orderId: order.id,
       amountCents: order.totalCents,
       provider: "mpesa",
@@ -153,6 +165,7 @@ router.post("/mpesa/stkpush", requireAuth, async (req, res): Promise<void> => {
     const [tx] = await db
       .insert(transactionsTable)
       .values({
+        ownerId: tenantId,
         orderId: order.id,
         amountCents: order.totalCents,
         provider: "mpesa",

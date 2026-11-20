@@ -35,10 +35,12 @@ import { ImageUp, Trash2, UserPlus, KeyRound, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { BrandMark } from "@/components/BrandMark";
+import { PasswordInput } from "@/components/PasswordInput";
 
 interface StaffUser {
   id: number;
   username: string;
+  email?: string | null;
   createdAt: string;
 }
 
@@ -52,7 +54,7 @@ function useStaffUsers() {
 function useCreateUser() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { username: string; password: string }) =>
+    mutationFn: (data: { username: string; email: string; password: string }) =>
       customFetch<StaffUser>("/api/users", {
         method: "POST",
         body: JSON.stringify(data),
@@ -226,7 +228,11 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>My credentials</CardTitle>
           <CardDescription>
-            Signed in as <span className="font-medium">{user?.username}</span>. Changes only affect your own account.
+            Signed in as{" "}
+            <span className="font-medium">
+              {user?.email || user?.username}
+            </span>
+            . Changes only affect your own account.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -245,18 +251,28 @@ function StaffAccountsCard({ currentUserId }: { currentUserId?: number }) {
   const resetPassword = useResetPassword();
 
   const [newUsername, setNewUsername] = useState("");
+  const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [resetTargetId, setResetTargetId] = useState<number | null>(null);
   const [resetNewPassword, setResetNewPassword] = useState("");
 
   async function onCreateUser(e: FormEvent) {
     e.preventDefault();
-    if (!newUsername.trim() || !newPassword) return;
+    if (!newUsername.trim() || !newEmail.trim() || !newPassword) return;
     try {
-      await createUser.mutateAsync({ username: newUsername.trim(), password: newPassword });
+      await createUser.mutateAsync({
+        username: newUsername.trim(),
+        email: newEmail.trim(),
+        password: newPassword,
+      });
+      const createdEmail = newEmail.trim();
       setNewUsername("");
+      setNewEmail("");
       setNewPassword("");
-      toast({ title: "Account created", description: `${newUsername.trim()} can now log in.` });
+      toast({
+        title: "Account created",
+        description: `${createdEmail} can now log in.`,
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to create account";
       toast({ title: "Failed", description: message, variant: "destructive" });
@@ -315,8 +331,9 @@ function StaffAccountsCard({ currentUserId }: { currentUserId?: number }) {
                     <Badge variant="secondary" className="text-xs">You</Badge>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Joined {new Date(u.createdAt).toLocaleDateString()}
+                <p className="text-xs text-muted-foreground truncate">
+                  {u.email ? `${u.email} · ` : ""}Joined{" "}
+                  {new Date(u.createdAt).toLocaleDateString()}
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -338,9 +355,8 @@ function StaffAccountsCard({ currentUserId }: { currentUserId?: number }) {
                     <form id="reset-pw-form" onSubmit={onResetPassword}>
                       <div className="space-y-2 py-2">
                         <Label htmlFor="resetNewPassword">New password</Label>
-                        <Input
+                        <PasswordInput
                           id="resetNewPassword"
-                          type="password"
                           placeholder="At least 6 characters"
                           value={resetNewPassword}
                           onChange={(e) => setResetNewPassword(e.target.value)}
@@ -406,9 +422,9 @@ function StaffAccountsCard({ currentUserId }: { currentUserId?: number }) {
             Add staff account
           </h3>
           <form onSubmit={onCreateUser} className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-2">
-                <Label htmlFor="newStaffUsername">Username</Label>
+                <Label htmlFor="newStaffUsername">Name</Label>
                 <Input
                   id="newStaffUsername"
                   value={newUsername}
@@ -419,10 +435,20 @@ function StaffAccountsCard({ currentUserId }: { currentUserId?: number }) {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="newStaffPassword">Password</Label>
+                <Label htmlFor="newStaffEmail">Email</Label>
                 <Input
+                  id="newStaffEmail"
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="jane@example.com"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="newStaffPassword">Password</Label>
+                <PasswordInput
                   id="newStaffPassword"
-                  type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="At least 6 characters"
@@ -446,6 +472,7 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
   const { toast } = useToast();
   const updateCredentials = useUpdateCredentials();
   const [currentPassword, setCurrentPassword] = useState("");
+  const [newEmail, setNewEmail] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -462,8 +489,8 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
       toast({ title: "Passwords don't match", variant: "destructive" });
       return;
     }
-    if (!newUsername && !newPassword) {
-      toast({ title: "Nothing to change", description: "Enter a new username or new password.", variant: "destructive" });
+    if (!newEmail.trim() && !newUsername.trim() && !newPassword) {
+      toast({ title: "Nothing to change", description: "Enter a new email, username, or password.", variant: "destructive" });
       return;
     }
 
@@ -471,12 +498,14 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
       await updateCredentials.mutateAsync({
         data: {
           currentPassword,
-          ...(newUsername ? { newUsername: newUsername.trim() } : {}),
+          ...(newEmail.trim() ? { newEmail: newEmail.trim() } : {}),
+          ...(newUsername.trim() ? { newUsername: newUsername.trim() } : {}),
           ...(newPassword ? { newPassword } : {}),
         },
       });
       await onUpdated();
       setCurrentPassword("");
+      setNewEmail("");
       setNewUsername("");
       setNewPassword("");
       setConfirmPassword("");
@@ -491,9 +520,8 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="space-y-2">
         <Label htmlFor="currentPassword">Current password</Label>
-        <Input
+        <PasswordInput
           id="currentPassword"
-          type="password"
           autoComplete="current-password"
           value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)}
@@ -501,22 +529,34 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
         />
       </div>
       <Separator />
-      <div className="space-y-2">
-        <Label htmlFor="newUsername">New username (optional)</Label>
-        <Input
-          id="newUsername"
-          autoComplete="username"
-          value={newUsername}
-          onChange={(e) => setNewUsername(e.target.value)}
-          placeholder="At least 3 characters"
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label htmlFor="newEmail">New email (optional)</Label>
+          <Input
+            id="newEmail"
+            type="email"
+            autoComplete="email"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            placeholder="you@example.com"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="newUsername">New username (optional)</Label>
+          <Input
+            id="newUsername"
+            autoComplete="username"
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            placeholder="At least 3 characters"
+          />
+        </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-2">
           <Label htmlFor="newPassword">New password (optional)</Label>
-          <Input
+          <PasswordInput
             id="newPassword"
-            type="password"
             autoComplete="new-password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
@@ -525,9 +565,8 @@ function CredentialsForm({ onUpdated }: { onUpdated: () => Promise<void> }) {
         </div>
         <div className="space-y-2">
           <Label htmlFor="confirmPassword">Confirm new password</Label>
-          <Input
+          <PasswordInput
             id="confirmPassword"
-            type="password"
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}

@@ -28,11 +28,13 @@ export interface ErrorResponse {
 export interface User {
   id: number;
   username: string;
+  /** @nullable */
+  email?: string | null;
 }
 
 export interface LoginInput {
-  /** @minLength 1 */
-  username: string;
+  email?: string;
+  username?: string;
   /** @minLength 1 */
   password: string;
 }
@@ -40,6 +42,7 @@ export interface LoginInput {
 export interface UpdateCredentialsInput {
   /** @minLength 1 */
   currentPassword: string;
+  newEmail?: string;
   /** @minLength 3 */
   newUsername?: string;
   /** @minLength 6 */

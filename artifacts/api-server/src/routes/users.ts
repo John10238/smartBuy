@@ -1,22 +1,25 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, or, and, sql } from "drizzle-orm";
 import { db, usersTable, isDatabaseConnected } from "@workspace/db";
-import { hashPassword, getAuthUserId } from "../lib/auth";
+import { hashPassword, getAuthUserId, getTenantId } from "../lib/auth";
 import { z } from "zod";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
 
-router.get("/users", async (_req, res): Promise<void> => {
+router.get("/users", async (req, res): Promise<void> => {
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const rows = [...memoryStore.users].sort(
-      (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
-    );
+    const rows = memoryStore.users
+      .filter((u) => (u.ownerId ?? u.id) === tenantId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     res.json(
       rows.map((u) => ({
         id: u.id,
         username: u.username,
+        email: u.email,
         createdAt: u.createdAt.toISOString(),
       })),
     );
@@ -24,15 +27,29 @@ router.get("/users", async (_req, res): Promise<void> => {
   }
 
   const rows = await db
-    .select({ id: usersTable.id, username: usersTable.username, createdAt: usersTable.createdAt })
+    .select({
+      id: usersTable.id,
+      username: usersTable.username,
+      email: usersTable.email,
+      createdAt: usersTable.createdAt,
+    })
     .from(usersTable)
+    .where(or(eq(usersTable.id, tenantId), eq(usersTable.ownerId, tenantId)))
     .orderBy(usersTable.createdAt);
 
-  res.json(rows.map((u) => ({ id: u.id, username: u.username, createdAt: u.createdAt.toISOString() })));
+  res.json(
+    rows.map((u) => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      createdAt: u.createdAt.toISOString(),
+    })),
+  );
 });
 
 const CreateUserBody = z.object({
-  username: z.string().min(3, "Username must be at least 3 characters"),
+  username: z.string().min(3, "Name/username must be at least 3 characters"),
+  email: z.string().trim().email("Enter a valid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
@@ -43,13 +60,19 @@ router.post("/users", async (req, res): Promise<void> => {
     return;
   }
 
-  const { username, password } = parsed.data;
+  const tenantId = getTenantId(req);
+  const { username, email, password } = parsed.data;
   const trimmed = username.trim();
+  const normalizedEmail = email.trim().toLowerCase();
 
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    if (memoryStore.users.some((u) => u.username === trimmed)) {
-      res.status(409).json({ error: "Username is already taken" });
+    if (
+      memoryStore.users.some(
+        (u) => u.email && u.email.toLowerCase() === normalizedEmail,
+      )
+    ) {
+      res.status(409).json({ error: "Email is already registered" });
       return;
     }
     const passwordHash = await hashPassword(password);
@@ -57,43 +80,61 @@ router.post("/users", async (req, res): Promise<void> => {
     const created = {
       id: memoryStore.allocUserId(),
       username: trimmed,
+      email: normalizedEmail,
+      ownerId: tenantId,
       passwordHash,
       createdAt: now,
       updatedAt: now,
     };
     memoryStore.users.push(created);
-    req.log.info({ username: created.username }, "New user created");
+    req.log.info({ username: created.username, email: created.email, tenantId }, "New staff user created");
     res.status(201).json({
       id: created.id,
       username: created.username,
+      email: created.email,
       createdAt: created.createdAt.toISOString(),
     });
     return;
   }
 
-  const [existing] = await db
+  const [existingEmail] = await db
     .select({ id: usersTable.id })
     .from(usersTable)
-    .where(eq(usersTable.username, trimmed));
+    .where(sql`lower(${usersTable.email}) = ${normalizedEmail}`);
 
-  if (existing) {
-    res.status(409).json({ error: "Username is already taken" });
+  if (existingEmail) {
+    res.status(409).json({ error: "Email is already registered" });
     return;
   }
 
   const passwordHash = await hashPassword(password);
   const [created] = await db
     .insert(usersTable)
-    .values({ username: trimmed, passwordHash })
-    .returning({ id: usersTable.id, username: usersTable.username, createdAt: usersTable.createdAt });
+    .values({
+      username: trimmed,
+      email: normalizedEmail,
+      ownerId: tenantId,
+      passwordHash,
+    })
+    .returning({
+      id: usersTable.id,
+      username: usersTable.username,
+      email: usersTable.email,
+      createdAt: usersTable.createdAt,
+    });
 
   if (!created) {
     res.status(500).json({ error: "Failed to create user" });
     return;
   }
 
-  req.log.info({ username: created.username }, "New user created");
-  res.status(201).json({ id: created.id, username: created.username, createdAt: created.createdAt.toISOString() });
+  req.log.info({ username: created.username, email: created.email, tenantId }, "New staff user created");
+  res.status(201).json({
+    id: created.id,
+    username: created.username,
+    email: created.email,
+    createdAt: created.createdAt.toISOString(),
+  });
 });
 
 const ResetPasswordBody = z.object({
@@ -113,9 +154,13 @@ router.patch("/users/:id/password", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const target = memoryStore.users.find((u) => u.id === targetId);
+    const target = memoryStore.users.find(
+      (u) => u.id === targetId && (u.ownerId ?? u.id) === tenantId,
+    );
     if (!target) {
       res.status(404).json({ error: "User not found" });
       return;
@@ -127,7 +172,15 @@ router.patch("/users/:id/password", async (req, res): Promise<void> => {
     return;
   }
 
-  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, targetId));
+  const [target] = await db
+    .select()
+    .from(usersTable)
+    .where(
+      and(
+        eq(usersTable.id, targetId),
+        or(eq(usersTable.id, tenantId), eq(usersTable.ownerId, tenantId)),
+      ),
+    );
   if (!target) {
     res.status(404).json({ error: "User not found" });
     return;
@@ -152,9 +205,13 @@ router.delete("/users/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const idx = memoryStore.users.findIndex((u) => u.id === targetId);
+    const idx = memoryStore.users.findIndex(
+      (u) => u.id === targetId && (u.ownerId ?? u.id) === tenantId,
+    );
     if (idx === -1) {
       res.status(404).json({ error: "User not found" });
       return;
@@ -168,7 +225,12 @@ router.delete("/users/:id", async (req, res): Promise<void> => {
   const [target] = await db
     .select({ id: usersTable.id })
     .from(usersTable)
-    .where(eq(usersTable.id, targetId));
+    .where(
+      and(
+        eq(usersTable.id, targetId),
+        or(eq(usersTable.id, tenantId), eq(usersTable.ownerId, tenantId)),
+      ),
+    );
 
   if (!target) {
     res.status(404).json({ error: "User not found" });

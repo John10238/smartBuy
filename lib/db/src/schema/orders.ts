@@ -8,6 +8,7 @@ import {
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
+  ownerId: integer("owner_id").notNull().default(1),
   reference: text("reference").notNull().unique(),
   status: text("status").notNull().default("pending"),
   totalCents: integer("total_cents").notNull(),

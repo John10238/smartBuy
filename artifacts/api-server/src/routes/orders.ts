@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -16,6 +16,7 @@ import {
   CancelOrderParams,
   DeleteOrderParams,
 } from "@workspace/api-zod";
+import { getTenantId } from "../lib/auth";
 import { generateOrderReference } from "../lib/mpesa";
 import {
   memoryStore,
@@ -59,12 +60,15 @@ router.get("/orders", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
+    const owned = memoryStore.orders.filter((o) => o.ownerId === tenantId);
     const filtered = (
       parsed.data.status
-        ? memoryStore.orders.filter((o) => o.status === parsed.data.status)
-        : [...memoryStore.orders]
+        ? owned.filter((o) => o.status === parsed.data.status)
+        : owned
     ).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     res.json(
@@ -84,11 +88,17 @@ router.get("/orders", async (req, res): Promise<void> => {
     ? await db
         .select()
         .from(ordersTable)
-        .where(eq(ordersTable.status, parsed.data.status))
+        .where(
+          and(
+            eq(ordersTable.ownerId, tenantId),
+            eq(ordersTable.status, parsed.data.status),
+          ),
+        )
         .orderBy(desc(ordersTable.createdAt))
     : await db
         .select()
         .from(ordersTable)
+        .where(eq(ordersTable.ownerId, tenantId))
         .orderBy(desc(ordersTable.createdAt));
 
   if (orders.length === 0) {
@@ -123,9 +133,15 @@ router.post("/orders", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const productMap = new Map(memoryStore.products.map((p) => [p.id, p]));
+    const productMap = new Map(
+      memoryStore.products
+        .filter((p) => p.ownerId === tenantId)
+        .map((p) => [p.id, p]),
+    );
     for (const item of parsed.data.items) {
       const p = productMap.get(item.productId);
       if (!p) {
@@ -150,6 +166,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     const now = new Date();
     const order: MemoryOrder = {
       id: memoryStore.allocOrderId(),
+      ownerId: tenantId,
       reference,
       status: isCash ? "paid" : "pending",
       totalCents,
@@ -190,7 +207,12 @@ router.post("/orders", async (req, res): Promise<void> => {
   const products = await db
     .select()
     .from(productsTable)
-    .where(inArray(productsTable.id, productIds));
+    .where(
+      and(
+        eq(productsTable.ownerId, tenantId),
+        inArray(productsTable.id, productIds),
+      ),
+    );
 
   const productMap = new Map(products.map((p) => [p.id, p]));
 
@@ -222,6 +244,7 @@ router.post("/orders", async (req, res): Promise<void> => {
       const [order] = await tx
         .insert(ordersTable)
         .values({
+          ownerId: tenantId,
           reference,
           status: initialStatus,
           totalCents,
@@ -260,7 +283,12 @@ router.post("/orders", async (req, res): Promise<void> => {
             .set({
               stock: sql`${productsTable.stock} - ${item.quantity}`,
             })
-            .where(eq(productsTable.id, item.productId));
+            .where(
+              and(
+                eq(productsTable.id, item.productId),
+                eq(productsTable.ownerId, tenantId),
+              ),
+            );
         }
       }
 
@@ -283,9 +311,13 @@ router.post("/orders/:id/cancel", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const order = memoryStore.orders.find((o) => o.id === params.data.id);
+    const order = memoryStore.orders.find(
+      (o) => o.id === params.data.id && o.ownerId === tenantId,
+    );
     if (!order) {
       res.status(404).json({ error: "Order not found" });
       return;
@@ -293,7 +325,9 @@ router.post("/orders/:id/cancel", async (req, res): Promise<void> => {
     const items = memoryStore.orderItems.filter((it) => it.orderId === order.id);
     if (order.status === "paid") {
       for (const item of items) {
-        const p = memoryStore.products.find((pr) => pr.id === item.productId);
+        const p = memoryStore.products.find(
+          (pr) => pr.id === item.productId && pr.ownerId === tenantId,
+        );
         if (p) p.stock += item.quantity;
       }
     }
@@ -308,7 +342,12 @@ router.post("/orders/:id/cancel", async (req, res): Promise<void> => {
       const [order] = await tx
         .select()
         .from(ordersTable)
-        .where(eq(ordersTable.id, params.data.id));
+        .where(
+          and(
+            eq(ordersTable.id, params.data.id),
+            eq(ordersTable.ownerId, tenantId),
+          ),
+        );
 
       if (!order) return { kind: "not-found" as const };
       if (order.status === "cancelled") {
@@ -330,7 +369,12 @@ router.post("/orders/:id/cancel", async (req, res): Promise<void> => {
             .set({
               stock: sql`${productsTable.stock} + ${item.quantity}`,
             })
-            .where(eq(productsTable.id, item.productId));
+            .where(
+              and(
+                eq(productsTable.id, item.productId),
+                eq(productsTable.ownerId, tenantId),
+              ),
+            );
         }
       }
 
@@ -367,9 +411,13 @@ router.delete("/orders/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const idx = memoryStore.orders.findIndex((o) => o.id === params.data.id);
+    const idx = memoryStore.orders.findIndex(
+      (o) => o.id === params.data.id && o.ownerId === tenantId,
+    );
     if (idx === -1) {
       res.status(404).json({ error: "Order not found" });
       return;
@@ -378,7 +426,9 @@ router.delete("/orders/:id", async (req, res): Promise<void> => {
     if (order.status === "paid") {
       const items = memoryStore.orderItems.filter((it) => it.orderId === order.id);
       for (const item of items) {
-        const p = memoryStore.products.find((pr) => pr.id === item.productId);
+        const p = memoryStore.products.find(
+          (pr) => pr.id === item.productId && pr.ownerId === tenantId,
+        );
         if (p) p.stock += item.quantity;
       }
     }
@@ -395,7 +445,12 @@ router.delete("/orders/:id", async (req, res): Promise<void> => {
       const [order] = await tx
         .select()
         .from(ordersTable)
-        .where(eq(ordersTable.id, params.data.id));
+        .where(
+          and(
+            eq(ordersTable.id, params.data.id),
+            eq(ordersTable.ownerId, tenantId),
+          ),
+        );
 
       if (!order) return { kind: "not-found" as const };
 
@@ -410,7 +465,12 @@ router.delete("/orders/:id", async (req, res): Promise<void> => {
             .set({
               stock: sql`${productsTable.stock} + ${item.quantity}`,
             })
-            .where(eq(productsTable.id, item.productId));
+            .where(
+              and(
+                eq(productsTable.id, item.productId),
+                eq(productsTable.ownerId, tenantId),
+              ),
+            );
         }
       }
 
@@ -437,9 +497,13 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const order = memoryStore.orders.find((o) => o.id === params.data.id);
+    const order = memoryStore.orders.find(
+      (o) => o.id === params.data.id && o.ownerId === tenantId,
+    );
     if (!order) {
       res.status(404).json({ error: "Order not found" });
       return;
@@ -452,7 +516,12 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
   const [order] = await db
     .select()
     .from(ordersTable)
-    .where(eq(ordersTable.id, params.data.id));
+    .where(
+      and(
+        eq(ordersTable.id, params.data.id),
+        eq(ordersTable.ownerId, tenantId),
+      ),
+    );
 
   if (!order) {
     res.status(404).json({ error: "Order not found" });

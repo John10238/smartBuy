@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, ilike, or, asc } from "drizzle-orm";
+import { eq, ilike, or, and, asc } from "drizzle-orm";
 import { db, productsTable, isDatabaseConnected } from "@workspace/db";
 import {
   ListProductsQueryParams,
@@ -12,6 +12,7 @@ import {
   UpdateProductResponse,
   DeleteProductParams,
 } from "@workspace/api-zod";
+import { getTenantId } from "../lib/auth";
 import { memoryStore, type MemoryProduct } from "../lib/memoryStore";
 
 const router: IRouter = Router();
@@ -38,20 +39,22 @@ router.get("/products", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
   const search = parsed.data.search?.trim();
 
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
     const q = search?.toLowerCase();
+    const owned = memoryStore.products.filter((p) => p.ownerId === tenantId);
     const rows = (
       q
-        ? memoryStore.products.filter(
+        ? owned.filter(
             (p) =>
               p.name.toLowerCase().includes(q) ||
               (p.sku?.toLowerCase().includes(q) ?? false) ||
               (p.category?.toLowerCase().includes(q) ?? false),
           )
-        : [...memoryStore.products]
+        : owned
     ).sort((a, b) => a.name.localeCompare(b.name));
     res.json(ListProductsResponse.parse(rows.map(serialize)));
     return;
@@ -62,14 +65,21 @@ router.get("/products", async (req, res): Promise<void> => {
         .select()
         .from(productsTable)
         .where(
-          or(
-            ilike(productsTable.name, `%${search}%`),
-            ilike(productsTable.sku, `%${search}%`),
-            ilike(productsTable.category, `%${search}%`),
+          and(
+            eq(productsTable.ownerId, tenantId),
+            or(
+              ilike(productsTable.name, `%${search}%`),
+              ilike(productsTable.sku, `%${search}%`),
+              ilike(productsTable.category, `%${search}%`),
+            ),
           ),
         )
         .orderBy(asc(productsTable.name))
-    : await db.select().from(productsTable).orderBy(asc(productsTable.name));
+    : await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.ownerId, tenantId))
+        .orderBy(asc(productsTable.name));
 
   res.json(ListProductsResponse.parse(rows.map(serialize)));
 });
@@ -81,11 +91,14 @@ router.post("/products", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
     const now = new Date();
     const row: MemoryProduct = {
       id: memoryStore.allocProductId(),
+      ownerId: tenantId,
       name: parsed.data.name,
       sku: parsed.data.sku ?? null,
       description: parsed.data.description ?? null,
@@ -104,6 +117,7 @@ router.post("/products", async (req, res): Promise<void> => {
   const [row] = await db
     .insert(productsTable)
     .values({
+      ownerId: tenantId,
       name: parsed.data.name,
       sku: parsed.data.sku ?? null,
       description: parsed.data.description ?? null,
@@ -129,9 +143,13 @@ router.get("/products/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const row = memoryStore.products.find((p) => p.id === params.data.id);
+    const row = memoryStore.products.find(
+      (p) => p.id === params.data.id && p.ownerId === tenantId,
+    );
     if (!row) {
       res.status(404).json({ error: "Product not found" });
       return;
@@ -143,7 +161,12 @@ router.get("/products/:id", async (req, res): Promise<void> => {
   const [row] = await db
     .select()
     .from(productsTable)
-    .where(eq(productsTable.id, params.data.id));
+    .where(
+      and(
+        eq(productsTable.id, params.data.id),
+        eq(productsTable.ownerId, tenantId),
+      ),
+    );
 
   if (!row) {
     res.status(404).json({ error: "Product not found" });
@@ -166,9 +189,13 @@ router.patch("/products/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const row = memoryStore.products.find((p) => p.id === params.data.id);
+    const row = memoryStore.products.find(
+      (p) => p.id === params.data.id && p.ownerId === tenantId,
+    );
     if (!row) {
       res.status(404).json({ error: "Product not found" });
       return;
@@ -198,7 +225,12 @@ router.patch("/products/:id", async (req, res): Promise<void> => {
     const [row] = await db
       .select()
       .from(productsTable)
-      .where(eq(productsTable.id, params.data.id));
+      .where(
+        and(
+          eq(productsTable.id, params.data.id),
+          eq(productsTable.ownerId, tenantId),
+        ),
+      );
     if (!row) {
       res.status(404).json({ error: "Product not found" });
       return;
@@ -210,7 +242,12 @@ router.patch("/products/:id", async (req, res): Promise<void> => {
   const [row] = await db
     .update(productsTable)
     .set(updates)
-    .where(eq(productsTable.id, params.data.id))
+    .where(
+      and(
+        eq(productsTable.id, params.data.id),
+        eq(productsTable.ownerId, tenantId),
+      ),
+    )
     .returning();
 
   if (!row) {
@@ -228,9 +265,13 @@ router.delete("/products/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
-    const idx = memoryStore.products.findIndex((p) => p.id === params.data.id);
+    const idx = memoryStore.products.findIndex(
+      (p) => p.id === params.data.id && p.ownerId === tenantId,
+    );
     if (idx === -1) {
       res.status(404).json({ error: "Product not found" });
       return;
@@ -242,7 +283,12 @@ router.delete("/products/:id", async (req, res): Promise<void> => {
 
   const [row] = await db
     .delete(productsTable)
-    .where(eq(productsTable.id, params.data.id))
+    .where(
+      and(
+        eq(productsTable.id, params.data.id),
+        eq(productsTable.ownerId, tenantId),
+      ),
+    )
     .returning();
 
   if (!row) {

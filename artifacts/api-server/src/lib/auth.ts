@@ -2,9 +2,11 @@ import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
-import { pool, isDatabaseConnected } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { db, pool, usersTable, isDatabaseConnected } from "@workspace/db";
 import type { Request, RequestHandler } from "express";
 import { logger } from "./logger";
+import { memoryStore } from "./memoryStore";
 
 declare module "express-session" {
   interface SessionData {
@@ -16,6 +18,7 @@ declare global {
   namespace Express {
     interface Request {
       authUserId?: number;
+      tenantId?: number;
     }
   }
 }
@@ -185,8 +188,42 @@ export async function verifyPassword(
   return bcrypt.compare(password, hash);
 }
 
-export const requireAuth: RequestHandler = (req, res, next) => {
-  if (!getAuthUserId(req)) {
+export async function resolveTenantId(req: Request): Promise<number | null> {
+  if (req.tenantId) return req.tenantId;
+  const userId = getAuthUserId(req);
+  if (!userId) return null;
+
+  if (!isDatabaseConnected) {
+    memoryStore.ensureSeeded();
+    const user = memoryStore.users.find((u) => u.id === userId);
+    if (!user) return null;
+    const tid = user.ownerId ?? user.id;
+    req.tenantId = tid;
+    return tid;
+  }
+
+  const [user] = await db
+    .select({ id: usersTable.id, ownerId: usersTable.ownerId })
+    .from(usersTable)
+    .where(eq(usersTable.id, userId));
+  if (!user) return null;
+  const tid = user.ownerId ?? user.id;
+  req.tenantId = tid;
+  return tid;
+}
+
+export function getTenantId(req: Request): number {
+  return req.tenantId!;
+}
+
+export const requireAuth: RequestHandler = async (req, res, next) => {
+  const userId = getAuthUserId(req);
+  if (!userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  const tenantId = await resolveTenantId(req);
+  if (!tenantId) {
     res.status(401).json({ error: "Not authenticated" });
     return;
   }

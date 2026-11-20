@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, sql, and, gte, lt } from "drizzle-orm";
 import { db, ordersTable, orderItemsTable, isDatabaseConnected } from "@workspace/db";
 import { z } from "zod";
+import { getTenantId } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
@@ -27,11 +28,14 @@ router.get("/reports/daily", async (req, res): Promise<void> => {
   const dayStart = new Date(`${dateStr}T00:00:00+03:00`);
   const dayEnd = new Date(`${dateStr}T23:59:59.999+03:00`);
 
+  const tenantId = getTenantId(req);
+
   if (!isDatabaseConnected) {
     memoryStore.ensureSeeded();
     const orders = memoryStore.orders
       .filter(
         (o) =>
+          o.ownerId === tenantId &&
           o.status === "paid" &&
           o.createdAt >= dayStart &&
           o.createdAt < dayEnd,
@@ -93,6 +97,7 @@ router.get("/reports/daily", async (req, res): Promise<void> => {
     .from(ordersTable)
     .where(
       and(
+        eq(ordersTable.ownerId, tenantId),
         eq(ordersTable.status, "paid"),
         gte(ordersTable.createdAt, dayStart),
         lt(ordersTable.createdAt, dayEnd),

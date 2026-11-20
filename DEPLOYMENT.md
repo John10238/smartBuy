@@ -24,7 +24,7 @@ In Render → New → PostgreSQL. Note the **Internal Database URL**.
 | Setting | Value |
 |---|---|
 | Runtime | Node |
-| Build Command | `npm install && npm run build` |
+| Build Command | `npm install --include=dev && npm run build` |
 | Start Command | `npm run start` |
 | Health Check Path | `/api/healthz` |
 | Auto-Deploy | Yes |

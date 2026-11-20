@@ -4,8 +4,8 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
-    startCommand: pnpm run start
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
     healthCheckPath: /api/healthz
     envVars:
       - key: NODE_ENV
@@ -28,6 +28,18 @@ services:
         sync: false
       - key: MPESA_ENVIRONMENT
         value: production
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
 
 databases:
   - name: smartbuy-db

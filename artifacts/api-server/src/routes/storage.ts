@@ -6,7 +6,7 @@ import {
   RequestUploadUrlResponse,
 } from "@workspace/api-zod";
 import { ObjectStorageService, ObjectNotFoundError } from "../lib/objectStorage";
-import { requireAuth } from "../lib/auth";
+import { requireAuth, isHttpsRequest } from "../lib/auth";
 import { memoryStore } from "../lib/memoryStore";
 
 const router: IRouter = Router();
@@ -32,7 +32,10 @@ router.post("/storage/uploads/request-url", requireAuth, async (req: Request, re
     if (!hasObjectStorage()) {
       const objectId = randomUUID();
       const objectPath = `/objects/uploads/${objectId}`;
-      const uploadURL = `/api/storage/local-upload/${objectId}`;
+      const host =
+        req.get("host") || `127.0.0.1:${process.env["PORT"] ?? "3000"}`;
+      const proto = isHttpsRequest(req) ? "https" : req.protocol || "http";
+      const uploadURL = `${proto}://${host}/api/storage/local-upload/${objectId}`;
       res.json(
         RequestUploadUrlResponse.parse({
           uploadURL,
@@ -62,7 +65,7 @@ router.post("/storage/uploads/request-url", requireAuth, async (req: Request, re
 router.put(
   "/storage/local-upload/:objectId",
   requireAuth,
-  express.raw({ type: "*/*", limit: "10mb" }),
+  express.raw({ type: "*/*", limit: "25mb" }),
   (req: Request, res: Response) => {
     const objectId = Array.isArray(req.params.objectId)
       ? req.params.objectId[0]

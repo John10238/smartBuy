@@ -96,12 +96,40 @@ export function useUpload(options: UseUploadOptions = {}) {
 
   const uploadToPresignedUrl = useCallback(
     async (file: File, uploadURL: string): Promise<void> => {
-      const response = await fetch(uploadURL, {
+      let targetUrl = uploadURL;
+      let isLocalUpload = uploadURL.startsWith("/api/storage/local-upload/");
+      if (!isLocalUpload) {
+        try {
+          const parsed = new URL(uploadURL);
+          if (parsed.pathname.startsWith("/api/storage/local-upload/")) {
+            isLocalUpload = true;
+            targetUrl = parsed.pathname;
+          }
+        } catch {
+          // keep original uploadURL
+        }
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": file.type || "application/octet-stream",
+      };
+      if (isLocalUpload) {
+        try {
+          const token =
+            typeof sessionStorage !== "undefined"
+              ? sessionStorage.getItem("smartbuy.authToken")
+              : null;
+          if (token) headers["Authorization"] = `Bearer ${token}`;
+        } catch {
+          // ignore storage errors
+        }
+      }
+
+      const response = await fetch(targetUrl, {
         method: "PUT",
         body: file,
-        headers: {
-          "Content-Type": file.type || "application/octet-stream",
-        },
+        ...(isLocalUpload ? { credentials: "include" as const } : {}),
+        headers,
       });
 
       if (!response.ok) {

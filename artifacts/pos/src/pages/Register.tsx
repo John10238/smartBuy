@@ -57,7 +57,11 @@ export default function Register() {
                   <div className="aspect-square bg-muted w-full relative">
                     {product.imageUrl ? (
                       <img
-                        src={product.imageUrl}
+                        src={
+                          product.imageUrl.startsWith("/objects/")
+                            ? `/api/storage${product.imageUrl}`
+                            : product.imageUrl
+                        }
                         alt={product.name}
                         className="w-full h-full object-cover"
                       />
